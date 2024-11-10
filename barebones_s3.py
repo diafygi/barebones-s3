@@ -130,13 +130,15 @@ class S3FileLikeReadOnly:
     def read(self, n=None):
         if self.closed:
             raise OSError("This S3 file is closed")
+        if self.tell() >= self.size:
+           return "" if "b" not in self.mode else b""
         range_end = min(self.size if n is None else (self.tell() + n), self.size)
         headers = {"Range": f"bytes={self.tell()}-{range_end - 1}"}
-        self._tell = range_end
         resp = s3_request("GET", self.name, headers=headers, **self._aws_config)
-        if resp.status not in [200, 206]:
+        if resp.status != 206:
             raise OSError(f"Error retrieving file from S3: {resp.status} {resp.reason}\n{resp.read().decode()}")
         resp_bytes = resp.read()
+        self._tell = range_end
         if "b" not in self.mode:
             return io.TextIOWrapper(io.BytesIO(resp_bytes), encoding=self._encoding).read()
         return resp_bytes
