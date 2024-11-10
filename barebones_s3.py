@@ -1,4 +1,4 @@
-import io, datetime, hashlib, hmac, http.client, urllib.parse
+import io, os, datetime, hashlib, hmac, http.client, urllib.parse
 
 def s3_request(
     method, path, query=None, headers=None, body=None, bucket=None,
@@ -70,4 +70,91 @@ def s3_request(
     conn.request(method, path + f"?{query_str}", body, dict(req_headers))
     resp = conn.getresponse()
     return resp
+
+class S3FileLikeReadOnly:
+    """
+    A read-only file-like object that dynamically calls S3 as needed.
+    """
+    # default methods
+    tell = lambda self: self._tell
+    readable = lambda self: True
+    seekable = lambda self: True
+    flush = lambda self: None
+    isatty = lambda self: False
+    truncate = lambda self: False
+    writable = lambda self: False
+
+    # each object instance has its own set of S3 credentials
+    def __init__(
+        self, path, mode="r", encoding=None,
+        bucket=None, aws_region=None, aws_key_id=None, aws_secret=None, session_token=None
+    ):
+        self._aws_config = {
+            "bucket": bucket,
+            "aws_region": aws_region,
+            "aws_key_id": aws_key_id,
+            "aws_secret": aws_secret,
+            "session_token": session_token,
+        }
+        if mode not in ["r", "rb", "rt"]:
+            raise OSError("Since this is a read-only file-like object, only modes 'r', 'rb', and 'rt' are allowed.")
+        self.name = path
+        self.mode = mode
+        self.closed = False
+        self._encoding = encoding
+        self._size = None
+        self._tell = 0
+
+    # raise exception when file doesn't exist
+    @property
+    def size(self):
+        if self._size is None:
+            resp = s3_request("HEAD", self.name, **self._aws_config)
+            if resp.status != 200:
+                raise OSError(f"Error retrieving HEAD from S3: {resp.status} {resp.reason}\n{resp.read().decode()}")
+            self._size = int(resp.headers['Content-Length'])
+        return self._size
+
+    # move the tell around
+    def seek(self, offset, whence=os.SEEK_SET):
+        if self.closed:
+            raise OSError("This S3 file is closed")
+        start_i = {os.SEEK_SET: 0, os.SEEK_CUR: self.tell(), os.SEEK_END: self.size}[whence]
+        target_i = start_i + offset
+        if target_i < 0:
+            raise OSError("Cannot seek beyond start of file")
+        self._tell = target_i
+        return self.tell()
+
+    # read the S3 key
+    def read(self, n=None):
+        if self.closed:
+            raise OSError("This S3 file is closed")
+        range_end = min(self.size if n is None else (self.tell() + n), self.size)
+        headers = {"Range": f"bytes={self.tell()}-{range_end - 1}"}
+        self._tell = range_end
+        resp = s3_request("GET", self.name, headers=headers, **self._aws_config)
+        if resp.status not in [200, 206]:
+            raise OSError(f"Error retrieving file from S3: {resp.status} {resp.reason}\n{resp.read().decode()}")
+        resp_bytes = resp.read()
+        if "b" not in self.mode:
+            return io.TextIOWrapper(io.BytesIO(resp_bytes), encoding=self._encoding).read()
+        return resp_bytes
+    def close():
+        self.closed = True
+    def __iter__(self):
+        raise NotImplementedError("Use .read() instead")
+    def readline(self, size=-1):
+        raise NotImplementedError("Use .read() instead")
+    def readlines(self, hint=-1):
+        raise NotImplementedError("Use .read() instead")
+    def fileno(self, b):
+        raise NotImplementedError("No file descriptor available")
+    def write(self, b):
+        raise NotImplementedError("Read-only S3 file")
+    def writelines(self, lines):
+        raise NotImplementedError("Read-only S3 file")
+
+def s3_open(*args, **kwargs):
+    return S3FileLikeReadOnly(*args, **kwargs)
 

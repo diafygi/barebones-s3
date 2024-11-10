@@ -9,9 +9,10 @@ I made this as a small helper utility for my personal projects that need to save
 ## Example use
 
 ```python
+import os
 from html import escape
 from xml.etree.ElementTree import fromstring
-from barebones_s3 import s3_request
+from barebones_s3 import s3_request, s3_open
 
 AWS_CONF = {
     "bucket": "mybucket",
@@ -75,6 +76,15 @@ resp9_body = resp9.read() # multipart is complete upon full response (not just w
 resp10 = s3_request("GET", "/testmulti.txt", **AWS_CONF)
 resp10_body = resp10.read()
 bool((body1 + body2) == resp10_body)
+
+# open and read from a file-like object
+s3_file = s3_open("/testmulti.txt", **AWS_CONF)
+s3_file.size # 12000000
+s3_file.seek(0, os.SEEK_END) # 12000000
+s3_file.tell() # 12000000
+s3_file.seek(3) # 3
+s3_file.read(3) # b"aaa"
+s3_file.tell() # 6
 ```
 
 ## Copyright
