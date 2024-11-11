@@ -1,27 +1,49 @@
-import io, os, datetime, hashlib, hmac, http.client, urllib.parse
+# Barebones S3 - https://github.com/diafygi/barebones-s3 Released under MIT
+import io
+import os
+import datetime
+import hashlib
+import hmac
+import http.client
+import urllib.parse
+
 
 def s3_request(
-    method, path, query=None, headers=None, body=None, bucket=None,
-    aws_region=None, aws_key_id=None, aws_secret=None, session_token=None
+    method,
+    path,
+    query=None,
+    headers=None,
+    body=None,
+    bucket=None,
+    aws_region=None,
+    aws_key_id=None,
+    aws_secret=None,
+    session_token=None,
 ):
     """
     Make a request to the S3 API.
 
     :param str method: S3 API request method (e.g. "PUT").
     :param str path: S3 API request path (e.g. "/test.txt").
-    :param dict query: (Optional) S3 API request GET query parameters (e.g. {"list-type": "2"}). 
+    :param dict query: (Optional) S3 API request GET query parameters (e.g. {"list-type": "2"}).
     :param dict headers: (Optional) S3 API request extra headers (e.g. {"Content-Type": "text/plain"}).
     :param dict body: (Optional) S3 API request body. Can be byte string or file-like object.
 
-    :param str bucket: The S3 bucket (e.g. "examplebucket").
-    :param str aws_region: The AWS region (e.g. "us-west-2").
-    :param str aws_key_id: The AWS Key ID to use.
-    :param str aws_secret: The AWS Key ID's secret.
-    :param str session_token: If using temporary credentials (e.g. from EC2 metadata), the session token to use.
+    :param str bucket: The S3 bucket (e.g. "examplebucket"). Can also be callable.
+    :param str aws_region: The AWS region (e.g. "us-west-2"). Can also be callable.
+    :param str aws_key_id: The AWS Key ID to use. Can also be callable.
+    :param str aws_secret: The AWS Key ID's secret. Can also be callable.
+    :param str session_token: If using temporary credentials, the session token to use. Can also be callable.
 
     :return: The response from AWS S3 API
     :rtype: http.client.HTTPResponse
     """
+    # call AWS config variables if they are callable
+    bucket = bucket() if callable(bucket) else bucket
+    aws_region = aws_region() if callable(aws_region) else aws_region
+    aws_key_id = aws_key_id() if callable(aws_key_id) else aws_key_id
+    aws_secret = aws_secret() if callable(aws_secret) else aws_secret
+    session_token = session_token() if callable(session_token) else session_token
     # payload size and hash
     data_hash = hashlib.sha256(body if isinstance(body, bytes) else b"")
     data_len = len(body) if isinstance(body, bytes) else 0
@@ -41,13 +63,19 @@ def s3_request(
     NOW_DATE = NOW.strftime("%Y%m%d")
     NOW_DT = NOW.strftime("%Y%m%dT%H%M%SZ")
     # canonical headers
-    cheaders = [("host", host), ("x-amz-content-sha256", payload_hash), ("x-amz-date", NOW_DT)]
+    cheaders = [
+        ("host", host),
+        ("x-amz-content-sha256", payload_hash),
+        ("x-amz-date", NOW_DT),
+    ]
     cheaders += [(k.lower(), v.strip()) for k, v in (headers or {}).items()]
     cheaders.sort(key=lambda i: i[0])
     cheaders_str = "".join(f"{k}:{v}\n" for k, v in cheaders)
     cheader_names = ";".join(k for k, v in cheaders)
     # signature
-    query_str = urllib.parse.urlencode(sorted((query or {}).items(), key=lambda i: i[0]))
+    query_str = urllib.parse.urlencode(
+        sorted((query or {}).items(), key=lambda i: i[0])
+    )
     canonical_request = f"{method}\n{path}\n{query_str}\n{cheaders_str}\n{cheader_names}\n{payload_hash}"
     req_hash = hashlib.sha256(canonical_request.encode()).hexdigest()
     sig_payload = f"AWS4-HMAC-SHA256\n{NOW_DT}\n{NOW_DATE}/{aws_region}/s3/aws4_request\n{req_hash}"
@@ -62,7 +90,10 @@ def s3_request(
         f"AWS4-HMAC-SHA256 Credential={aws_key_id}/{NOW_DATE}/{aws_region}/s3/aws4_request,"
         f"SignedHeaders={cheader_names},Signature={signature}"
     )
-    req_headers = cheaders + [("Content-Length", str(data_len)), ("Authorization", auth_header)]
+    req_headers = cheaders + [
+        ("Content-Length", str(data_len)),
+        ("Authorization", auth_header),
+    ]
     if session_token:
         req_headers.append(("X-Amz-Security-Token", session_token))
     # Make the request
@@ -71,23 +102,32 @@ def s3_request(
     resp = conn.getresponse()
     return resp
 
+
 class S3FileLikeReadOnly:
     """
     A read-only file-like object that dynamically calls S3 as needed.
     """
+
     # default methods
-    tell = lambda self: self._tell
-    readable = lambda self: True
-    seekable = lambda self: True
-    flush = lambda self: None
-    isatty = lambda self: False
-    truncate = lambda self: False
-    writable = lambda self: False
+    tell = property(lambda self: self._tell)
+    readable = property(lambda self: True)
+    seekable = property(lambda self: True)
+    flush = property(lambda self: None)
+    isatty = property(lambda self: False)
+    truncate = property(lambda self: False)
+    writable = property(lambda self: False)
 
     # each object instance has its own set of S3 credentials
     def __init__(
-        self, path, mode="r", encoding=None,
-        bucket=None, aws_region=None, aws_key_id=None, aws_secret=None, session_token=None
+        self,
+        path,
+        mode="r",
+        encoding=None,
+        bucket=None,
+        aws_region=None,
+        aws_key_id=None,
+        aws_secret=None,
+        session_token=None,
     ):
         self._aws_config = {
             "bucket": bucket,
@@ -97,7 +137,9 @@ class S3FileLikeReadOnly:
             "session_token": session_token,
         }
         if mode not in ["r", "rb", "rt"]:
-            raise OSError("Since this is a read-only file-like object, only modes 'r', 'rb', and 'rt' are allowed.")
+            raise OSError(
+                "Since this is a read-only file-like object, only modes 'r', 'rb', and 'rt' are allowed."
+            )
         self.name = path
         self.mode = mode
         self.closed = False
@@ -111,15 +153,19 @@ class S3FileLikeReadOnly:
         if self._size is None:
             resp = s3_request("HEAD", self.name, **self._aws_config)
             if resp.status != 200:
-                raise OSError(f"Error retrieving HEAD from S3: {resp.status} {resp.reason}\n{resp.read().decode()}")
-            self._size = int(resp.headers['Content-Length'])
+                raise OSError(
+                    f"Error retrieving HEAD from S3: {resp.status} {resp.reason}\n{resp.read().decode()}"
+                )
+            self._size = int(resp.headers["Content-Length"])
         return self._size
 
     # move the tell around
     def seek(self, offset, whence=os.SEEK_SET):
         if self.closed:
             raise OSError("This S3 file is closed")
-        start_i = {os.SEEK_SET: 0, os.SEEK_CUR: self.tell(), os.SEEK_END: self.size}[whence]
+        start_i = {os.SEEK_SET: 0, os.SEEK_CUR: self.tell(), os.SEEK_END: self.size}[
+            whence
+        ]
         target_i = start_i + offset
         if target_i < 0:
             raise OSError("Cannot seek beyond start of file")
@@ -131,32 +177,43 @@ class S3FileLikeReadOnly:
         if self.closed:
             raise OSError("This S3 file is closed")
         if self.tell() >= self.size:
-           return "" if "b" not in self.mode else b""
+            return "" if "b" not in self.mode else b""
         range_end = min(self.size if n is None else (self.tell() + n), self.size)
         headers = {"Range": f"bytes={self.tell()}-{range_end - 1}"}
         resp = s3_request("GET", self.name, headers=headers, **self._aws_config)
         if resp.status != 206:
-            raise OSError(f"Error retrieving file from S3: {resp.status} {resp.reason}\n{resp.read().decode()}")
+            raise OSError(
+                f"Error retrieving file from S3: {resp.status} {resp.reason}\n{resp.read().decode()}"
+            )
         resp_bytes = resp.read()
         self._tell = range_end
         if "b" not in self.mode:
-            return io.TextIOWrapper(io.BytesIO(resp_bytes), encoding=self._encoding).read()
+            return io.TextIOWrapper(
+                io.BytesIO(resp_bytes), encoding=self._encoding
+            ).read()
         return resp_bytes
-    def close():
+
+    def close(self):
         self.closed = True
+
     def __iter__(self):
         raise NotImplementedError("Use .read() instead")
+
     def readline(self, size=-1):
         raise NotImplementedError("Use .read() instead")
+
     def readlines(self, hint=-1):
         raise NotImplementedError("Use .read() instead")
+
     def fileno(self, b):
         raise NotImplementedError("No file descriptor available")
+
     def write(self, b):
         raise NotImplementedError("Read-only S3 file")
+
     def writelines(self, lines):
         raise NotImplementedError("Read-only S3 file")
 
+
 def s3_open(*args, **kwargs):
     return S3FileLikeReadOnly(*args, **kwargs)
-
